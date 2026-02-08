@@ -1,18 +1,13 @@
 /**
- * MCP Server with Anthropic Guidelines Integration
+ * MCP Server - HTTP only with Bearer token authentication
  *
- * This file demonstrates how to combine:
- * 1. Official MCP TypeScript SDK (protocol & transport)
- * 2. Anthropic "tools as code" approach (progressive disclosure, lazy loading)
- *
- * Benefits:
- * - Standard MCP protocol compliance
- * - Reduced token usage (tools discovered on-demand)
- * - Modular architecture (one tool = one file)
+ * Streamable HTTP transport for production (Docker, remote access).
+ * All /mcp endpoints require Authorization: Bearer <MCP_API_KEY> header.
+ * /health endpoint is unauthenticated (for Docker healthcheck).
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -20,46 +15,44 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getAllServers } from './servers/index.js';
+import { config } from './config.js';
 import { logger } from './utils/logger.js';
 
-/**
- * Create MCP Server instance
- */
-const server = new Server(
-  {
-    name: 'devrk-mcp',
-    version: '1.0.0'
-  },
-  {
-    capabilities: {
-      tools: {}
-    }
-  }
-);
+import type { Request, Response, NextFunction } from 'express';
 
 /**
- * Dynamic tool registry following Anthropic guidelines
- *
- * Key principle: Register tool METADATA only, not implementation
- * Implementation is lazy-loaded when tool is called
+ * Tool registry entry - metadata only, implementation lazy-loaded
  */
-const toolRegistry = new Map<string, {
+interface ToolRegistryEntry {
   serverName: string;
   toolName: string;
   metadata: Tool;
-}>();
+}
+
+/**
+ * Dynamic tool registry following Anthropic guidelines
+ * Loaded once at startup, shared across all requests
+ */
+const toolRegistry = new Map<string, ToolRegistryEntry>();
 
 /**
  * Convert camelCase to snake_case for MCP tool names
- * Example: getSubscriptions → get_subscriptions
+ * Example: getLatestVideos → get_latest_videos
  */
 function camelToSnake(str: string): string {
   return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 }
 
 /**
+ * Normalize server name for MCP tool name prefix
+ * Converts kebab-case to snake_case: qdrant-rag → qdrant_rag
+ */
+function normalizeServerName(name: string): string {
+  return name.replace(/-/g, '_');
+}
+
+/**
  * Initialize tool registry with metadata (NOT implementations)
- * This keeps context small - only names and schemas are exposed
  */
 async function initializeToolRegistry() {
   const servers = getAllServers();
@@ -68,17 +61,14 @@ async function initializeToolRegistry() {
 
   for (const serverMeta of servers) {
     for (const toolName of serverMeta.tools) {
-      // MCP tool name: snake_case (e.g., youtube__get_subscriptions)
-      const mcpToolName = `${serverMeta.name}__${camelToSnake(toolName)}`;
+      const mcpToolName = `${normalizeServerName(serverMeta.name)}__${camelToSnake(toolName)}`;
 
       try {
-        // Load ONLY metadata (schemas), not the full implementation
-        // toolName is in camelCase to match file names
         const metadata = await loadToolMetadata(serverMeta.name, toolName);
 
         toolRegistry.set(mcpToolName, {
           serverName: serverMeta.name,
-          toolName: toolName, // Keep camelCase for file loading
+          toolName: toolName,
           metadata
         });
 
@@ -98,42 +88,30 @@ async function initializeToolRegistry() {
     }
   }
 
-  logger.info({
-    toolCount: toolRegistry.size
-  }, 'Tool registry initialized');
+  logger.info({ toolCount: toolRegistry.size }, 'Tool registry initialized');
 }
 
 /**
  * Load tool metadata (schema + description) WITHOUT loading implementation
- *
- * This is the key to Anthropic's approach:
- * - Model sees only the schema (what tool needs/returns)
- * - Model does NOT see implementation code
- * - Implementation loaded only when tool is actually called
  */
 async function loadToolMetadata(serverName: string, toolName: string): Promise<Tool> {
-  // Import the module to get schemas
   const modulePath = `./servers/${serverName}/${toolName}.js`;
   const module = await import(modulePath);
 
-  // Extract the tool instance
   const tool = module[toolName] || module.default;
 
   if (!tool) {
     throw new Error(`Tool ${toolName} not found in ${modulePath}`);
   }
 
-  // Extract Zod schemas and convert to JSON Schema for MCP
-  // Use flat schema without $ref for better Claude Desktop compatibility
   let jsonSchema: any = { type: 'object', properties: {} };
 
   if (tool.inputSchema) {
     const fullSchema: any = zodToJsonSchema(tool.inputSchema, {
-      name: `${serverName}__${camelToSnake(toolName)}_input`,
+      name: `${normalizeServerName(serverName)}__${camelToSnake(toolName)}_input`,
       $refStrategy: 'none'
     });
 
-    // If schema has definitions and $ref, flatten it
     if (fullSchema.definitions && fullSchema.$ref) {
       const refKey = fullSchema.$ref.replace('#/definitions/', '');
       jsonSchema = fullSchema.definitions[refKey] || fullSchema;
@@ -143,13 +121,12 @@ async function loadToolMetadata(serverName: string, toolName: string): Promise<T
     }
   }
 
-  // Extract description
   const description = extractToolDescription(tool, serverName, toolName);
 
   return {
-    name: `${serverName}__${camelToSnake(toolName)}`, // MCP tool name in snake_case
+    name: `${normalizeServerName(serverName)}__${camelToSnake(toolName)}`,
     description,
-    inputSchema: jsonSchema as any // Cast to any to satisfy MCP SDK's Tool type
+    inputSchema: jsonSchema as any
   };
 }
 
@@ -157,124 +134,194 @@ async function loadToolMetadata(serverName: string, toolName: string): Promise<T
  * Extract tool description from tool metadata
  */
 function extractToolDescription(tool: any, serverName: string, toolName: string): string {
-  // Try to extract from tool definition or use a default
   if (tool.description) return tool.description;
   if (tool.name) return `${tool.name} tool`;
   return `${serverName} ${toolName} tool`;
 }
 
 /**
- * Handle tools/list request
- * Returns ONLY metadata (names + schemas), not implementations
+ * Create a new MCP Server instance with handlers configured.
+ * Called per-request in stateless HTTP mode.
  */
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const tools = Array.from(toolRegistry.values()).map(entry => entry.metadata);
+function createMcpServer(): Server {
+  const mcpServer = new Server(
+    { name: 'devrk-mcp', version: '1.0.0' },
+    { capabilities: { tools: {} } }
+  );
 
-  logger.debug({ count: tools.length }, 'Listed tools');
+  mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
+    const tools = Array.from(toolRegistry.values()).map(entry => entry.metadata);
+    logger.debug({ count: tools.length }, 'Listed tools');
+    return { tools };
+  });
 
-  return {
-    tools
-  };
-});
+  mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name: toolName, arguments: args } = request.params;
 
-/**
- * Handle tools/call request
- *
- * THIS IS WHERE LAZY LOADING HAPPENS (Anthropic guideline)
- * - Tool implementation imported ONLY when called
- * - Not loaded upfront, not kept in memory
- * - Reduces token usage dramatically
- */
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name: toolName, arguments: args } = request.params;
+    logger.info({ tool: toolName, argsKeys: Object.keys(args || {}) }, 'Tool call received');
 
-  logger.info({ tool: toolName, argsKeys: Object.keys(args || {}) }, 'Tool call received');
+    const toolEntry = toolRegistry.get(toolName);
 
-  const toolEntry = toolRegistry.get(toolName);
-
-  if (!toolEntry) {
-    throw new Error(`Unknown tool: ${toolName}`);
-  }
-
-  try {
-    // LAZY LOAD: Import tool implementation only now
-    const modulePath = `./servers/${toolEntry.serverName}/${toolEntry.toolName}.js`;
-
-    logger.debug({ tool: toolName, module: modulePath }, 'Lazy loading tool implementation');
-
-    const module = await import(modulePath);
-    const tool = module[toolEntry.toolName] || module.default;
-
-    if (!tool || typeof tool.execute !== 'function') {
-      throw new Error(`Tool ${toolName} does not have an execute function`);
+    if (!toolEntry) {
+      throw new Error(`Unknown tool: ${toolName}`);
     }
 
-    // Execute the tool
-    const startTime = Date.now();
-    const result = await tool.execute(args || {});
-    const duration = Date.now() - startTime;
+    try {
+      const modulePath = `./servers/${toolEntry.serverName}/${toolEntry.toolName}.js`;
+      logger.debug({ tool: toolName, module: modulePath }, 'Lazy loading tool implementation');
 
-    logger.info({
-      tool: toolName,
-      duration,
-      resultKeys: Object.keys(result)
-    }, 'Tool execution completed');
+      const module = await import(modulePath);
+      const tool = module[toolEntry.toolName] || module.default;
 
-    // Return result in MCP format
-    return {
-      content: [
-        {
-          type: 'text',
+      if (!tool || typeof tool.execute !== 'function') {
+        throw new Error(`Tool ${toolName} does not have an execute function`);
+      }
+
+      const startTime = Date.now();
+      const result = await tool.execute(args || {});
+      const duration = Date.now() - startTime;
+
+      logger.info({
+        tool: toolName,
+        duration,
+        resultKeys: Object.keys(result)
+      }, 'Tool execution completed');
+
+      return {
+        content: [{
+          type: 'text' as const,
           text: JSON.stringify(result, null, 2)
-        }
-      ]
-    };
+        }]
+      };
 
-  } catch (error: any) {
-    logger.error({
-      tool: toolName,
-      error: error.message,
-      stack: error.stack
-    }, 'Tool execution failed');
+    } catch (error: any) {
+      logger.error({
+        tool: toolName,
+        error: error.message,
+        stack: error.stack
+      }, 'Tool execution failed');
 
-    return {
-      content: [
-        {
-          type: 'text',
+      return {
+        content: [{
+          type: 'text' as const,
           text: `Error executing ${toolName}: ${error.message}`
-        }
-      ],
-      isError: true
-    };
-  }
-});
+        }],
+        isError: true
+      };
+    }
+  });
+
+  return mcpServer;
+}
 
 /**
- * Start MCP server with stdio transport
- * Stdio is used for local integrations (Claude Desktop, CLI)
+ * Bearer token authentication middleware for /mcp routes.
+ * Validates Authorization: Bearer <token> against MCP_API_KEY.
+ */
+function bearerAuth(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'Missing or invalid Authorization header. Expected: Bearer <token>' },
+      id: null
+    });
+    return;
+  }
+
+  const token = authHeader.slice(7);
+
+  if (token !== config.server.apiKey) {
+    res.status(403).json({
+      jsonrpc: '2.0',
+      error: { code: -32002, message: 'Invalid API key' },
+      id: null
+    });
+    return;
+  }
+
+  next();
+}
+
+/**
+ * Start MCP server on HTTP with Bearer token auth
  */
 export async function startMcpServer() {
-  logger.info('Starting MCP server with Anthropic guidelines...');
+  logger.info('Starting MCP server (HTTP)...');
 
-  // Initialize tool registry (metadata only)
   await initializeToolRegistry();
 
-  // Setup stdio transport
-  const transport = new StdioServerTransport();
+  const { default: express } = await import('express');
 
-  logger.info('Connecting to stdio transport...');
+  const app = express();
+  app.use(express.json());
 
-  await server.connect(transport);
+  // Health check endpoint - NO auth (Docker healthcheck needs it)
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', tools: toolRegistry.size });
+  });
 
-  logger.info('MCP server ready and listening on stdio');
+  // Bearer token auth for all /mcp routes
+  app.use('/mcp', bearerAuth);
+
+  // MCP Streamable HTTP endpoint (stateless)
+  app.post('/mcp', async (req, res) => {
+    try {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined // Stateless mode
+      });
+
+      const mcpServer = createMcpServer();
+      await mcpServer.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+
+      res.on('close', () => {
+        transport.close();
+        mcpServer.close();
+      });
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'HTTP request failed');
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null
+        });
+      }
+    }
+  });
+
+  // GET /mcp - SSE stream (not used in stateless mode, return 405)
+  app.get('/mcp', (_req, res) => {
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32601, message: 'SSE not supported in stateless mode' },
+      id: null
+    });
+  });
+
+  // DELETE /mcp - session termination (not used in stateless mode, return 405)
+  app.delete('/mcp', (_req, res) => {
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32601, message: 'Session termination not supported in stateless mode' },
+      id: null
+    });
+  });
+
+  const port = config.server.port;
+  const host = config.server.host;
+
+  app.listen(port, host, () => {
+    logger.info({ port, host }, 'MCP server ready on HTTP');
+  });
 }
 
 /**
  * Graceful shutdown
  */
 export async function stopMcpServer() {
-  logger.info('Stopping MCP server...');
-  await server.close();
   logger.info('MCP server stopped');
 }
 

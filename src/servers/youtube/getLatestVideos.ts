@@ -2,9 +2,9 @@ import { z } from 'zod';
 import { createTool } from '../../utils/tool-factory.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config.js';
-import { getSubscriptions } from './getSubscriptions.js';
-import { getPlaylistItems } from './getPlaylistItems.js';
+import { getYouTubeClient } from '../../utils/google-auth.js';
 import { channelIdToUploadsPlaylistId } from './utils.js';
+import { summarize } from '../../utils/ai-summarizer.js';
 
 /**
  * Input schema for getLatestVideos tool
@@ -17,11 +17,13 @@ const GetLatestVideosInputSchema = z.object({
     .default(config.youtube.defaultMaxChannels)
     .describe('Maximum number of channels to process'),
   hoursBack: z.number().min(1).optional()
-    .describe('Only include videos published within last N hours')
+    .describe('Only include videos published within last N hours'),
+  sendEmail: z.boolean().optional().default(false)
+    .describe('Send email digest to configured RECIPIENT_EMAIL')
 });
 
 /**
- * Video schema
+ * Video schema with AI summary
  */
 const VideoSchema = z.object({
   videoId: z.string(),
@@ -31,7 +33,10 @@ const VideoSchema = z.object({
   channelId: z.string(),
   channelTitle: z.string(),
   thumbnail: z.string(),
-  url: z.string()
+  url: z.string(),
+  summary: z.string().describe('AI-generated 2-sentence summary'),
+  summarySource: z.enum(['transcript', 'description', 'fallback'])
+    .describe('Source used for generating the summary')
 });
 
 /**
@@ -59,40 +64,140 @@ const GetLatestVideosOutputSchema = z.object({
 });
 
 /**
+ * Fetch all subscriptions with pagination
+ */
+async function fetchAllSubscriptions(youtube: ReturnType<typeof getYouTubeClient>) {
+  const subscriptions: any[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const response = await youtube.subscriptions.list({
+      part: ['snippet'],
+      mine: true,
+      maxResults: 50,
+      pageToken
+    });
+
+    if (response.data.items) {
+      subscriptions.push(...response.data.items);
+    }
+
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return subscriptions;
+}
+
+/**
+ * Fetch transcript for a video
+ */
+async function fetchTranscript(videoId: string): Promise<string | null> {
+  try {
+    const { YoutubeTranscript } = await import('youtube-transcript');
+    const entries = await YoutubeTranscript.fetchTranscript(videoId);
+    if (entries && entries.length > 0) {
+      return entries.map((e: any) => e.text).join(' ');
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Process a single channel: fetch videos, transcripts, and AI summaries
+ */
+async function processChannel(
+  youtube: ReturnType<typeof getYouTubeClient>,
+  channelId: string,
+  channelTitle: string,
+  channelThumbnail: string,
+  videosPerChannel: number,
+  cutoffDate: Date | null
+): Promise<z.infer<typeof ChannelVideosSchema>> {
+  const uploadsPlaylistId = channelIdToUploadsPlaylistId(channelId);
+
+  const playlistResponse = await youtube.playlistItems.list({
+    part: ['snippet', 'contentDetails'],
+    playlistId: uploadsPlaylistId,
+    maxResults: videosPerChannel
+  });
+
+  const items = playlistResponse.data.items || [];
+  const videos: z.infer<typeof VideoSchema>[] = [];
+
+  for (const item of items) {
+    const publishedAt = item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt || '';
+
+    if (cutoffDate && new Date(publishedAt) < cutoffDate) {
+      continue;
+    }
+
+    const videoId = item.contentDetails?.videoId || '';
+    const description = item.snippet?.description || '';
+
+    // Try transcript first, fallback to description
+    let summaryText = '';
+    let summarySource: 'transcript' | 'description' | 'fallback' = 'fallback';
+
+    const transcript = await fetchTranscript(videoId);
+    if (transcript) {
+      summaryText = await summarize(transcript);
+      summarySource = 'transcript';
+    } else if (description.length > 20) {
+      summaryText = await summarize(description);
+      summarySource = 'description';
+    }
+
+    if (!summaryText) {
+      summaryText = description.substring(0, 200).trim() || 'No summary available.';
+      summarySource = 'fallback';
+    }
+
+    videos.push({
+      videoId,
+      title: item.snippet?.title || '',
+      description,
+      publishedAt,
+      channelId: item.snippet?.channelId || channelId,
+      channelTitle: item.snippet?.channelTitle || channelTitle,
+      thumbnail:
+        item.snippet?.thumbnails?.high?.url ||
+        item.snippet?.thumbnails?.default?.url ||
+        '',
+      url: `https://www.youtube.com/watch?v=${videoId}`,
+      summary: summaryText,
+      summarySource
+    });
+  }
+
+  return {
+    channel: {
+      id: channelId,
+      title: channelTitle,
+      thumbnail: channelThumbnail
+    },
+    videos
+  };
+}
+
+/**
  * Get latest videos from all subscribed YouTube channels
  *
- * This is the main orchestrator tool that:
- * 1. Fetches all subscribed channels
- * 2. Converts channel IDs to uploads playlist IDs
- * 3. Fetches recent videos from each channel
- * 4. Optionally filters by publication date
- * 5. Optionally sends email digest if RECIPIENT_EMAIL configured
+ * Uses Google YouTube Data API directly (no Composio).
+ * For each video, fetches transcript and generates AI summary.
+ *
+ * Flow:
+ * 1. OAuth2 -> youtube.subscriptions.list(mine=true, paginated)
+ * 2. For each channel: fetch uploads, filter by date
+ * 3. For each video: fetch transcript -> AI summarize (2 sentences)
+ * 4. Optional: send email digest via Gmail API
  *
  * @example
  * ```typescript
- * // Get latest 5 videos from 10 channels
  * const result = await getLatestVideos.call({
- *   videosPerChannel: 5,
- *   maxChannels: 10
- * });
- *
- * console.log(result.summary);
- * // "Found 45 videos from 9 channels"
- *
- * for (const channelData of result.channels) {
- *   console.log(`\n${channelData.channel.title}:`);
- *   for (const video of channelData.videos) {
- *     console.log(`  - ${video.title}`);
- *     console.log(`    ${video.url}`);
- *   }
- * }
- * ```
- *
- * @example
- * ```typescript
- * // Get videos from last 24 hours only
- * const result = await getLatestVideos.call({
- *   videosPerChannel: 10,
+ *   videosPerChannel: 3,
+ *   maxChannels: 10,
  *   hoursBack: 24
  * });
  * ```
@@ -108,153 +213,78 @@ export const getLatestVideos = createTool({
       hoursBack: input.hoursBack
     }, 'Starting YouTube latest videos fetch');
 
+    const youtube = getYouTubeClient();
     const results: z.infer<typeof ChannelVideosSchema>[] = [];
 
     // 1. Fetch all subscriptions
-    logger.debug('Fetching YouTube subscriptions');
-    const subsResult = await getSubscriptions.execute({ maxResults: 50 });
+    const subscriptions = await fetchAllSubscriptions(youtube);
+    logger.info({ subscriptionCount: subscriptions.length }, 'Fetched YouTube subscriptions');
 
-    logger.info({
-      subscriptionCount: subsResult.count
-    }, 'Fetched YouTube subscriptions');
+    // 2. Limit channels
+    const channelsToProcess = subscriptions.slice(0, input.maxChannels);
 
-    // 2. Limit channels to process
-    const channelsToProcess = input.maxChannels
-      ? subsResult.subscriptions.slice(0, input.maxChannels)
-      : subsResult.subscriptions;
-
-    logger.info({
-      channelsToProcess: channelsToProcess.length
-    }, 'Processing channels');
-
-    // 3. Calculate cutoff date if hoursBack provided
+    // 3. Calculate cutoff date
     const cutoffDate = input.hoursBack
       ? new Date(Date.now() - input.hoursBack * 60 * 60 * 1000)
       : null;
 
-    if (cutoffDate) {
-      logger.debug({ cutoffDate: cutoffDate.toISOString() }, 'Filtering videos by date');
-    }
-
-    // 4. Fetch videos for each channel
+    // 4. Process each channel
     let processedCount = 0;
-    for (const subscription of channelsToProcess) {
+    for (const sub of channelsToProcess) {
       processedCount++;
-      const channelId = subscription.snippet.resourceId.channelId;
-      const channelTitle = subscription.snippet.title;
-      const channelThumbnail = subscription.snippet.thumbnails.default.url;
+      const channelId = sub.snippet?.resourceId?.channelId || '';
+      const channelTitle = sub.snippet?.title || '';
+      const channelThumbnail = sub.snippet?.thumbnails?.default?.url || '';
 
       logger.debug({
         channelTitle,
-        channelId,
         progress: `${processedCount}/${channelsToProcess.length}`
       }, 'Processing channel');
 
       try {
-        // Convert channel ID to uploads playlist ID
-        const uploadsPlaylistId = channelIdToUploadsPlaylistId(channelId);
-
-        // Fetch videos from uploads playlist
-        const playlistResult = await getPlaylistItems.execute({
-          playlistId: uploadsPlaylistId,
-          maxResults: input.videosPerChannel
-        });
-
-        // Process and filter videos
-        const videos: z.infer<typeof VideoSchema>[] = [];
-
-        for (const item of playlistResult.items) {
-          const publishedAt = item.contentDetails.videoPublishedAt;
-
-          // Filter by date if needed
-          if (cutoffDate && new Date(publishedAt) < cutoffDate) {
-            continue; // Skip old videos
-          }
-
-          videos.push({
-            videoId: item.contentDetails.videoId,
-            title: item.snippet.title,
-            description: item.snippet.description,
-            publishedAt,
-            channelId: item.snippet.channelId,
-            channelTitle: item.snippet.channelTitle,
-            thumbnail:
-              item.snippet.thumbnails?.high?.url ||
-              item.snippet.thumbnails?.default?.url ||
-              '',
-            url: `https://www.youtube.com/watch?v=${item.contentDetails.videoId}`
-          });
-        }
-
-        // Add to results only if there are videos
-        if (videos.length > 0) {
-          results.push({
-            channel: {
-              id: channelId,
-              title: channelTitle,
-              thumbnail: channelThumbnail
-            },
-            videos
-          });
-
-          logger.debug({
-            channelTitle,
-            videoCount: videos.length
-          }, 'Fetched videos for channel');
-        }
-
-      } catch (error: any) {
-        logger.error({
-          channelTitle,
+        const channelResult = await processChannel(
+          youtube,
           channelId,
-          error: error.message
-        }, 'Error fetching videos for channel');
+          channelTitle,
+          channelThumbnail,
+          input.videosPerChannel,
+          cutoffDate
+        );
 
-        // Add channel with error
+        if (channelResult.videos.length > 0) {
+          results.push(channelResult);
+        }
+      } catch (error: any) {
+        logger.error({ channelTitle, channelId, error: error.message }, 'Error processing channel');
         results.push({
-          channel: {
-            id: channelId,
-            title: channelTitle,
-            thumbnail: channelThumbnail
-          },
+          channel: { id: channelId, title: channelTitle, thumbnail: channelThumbnail },
           videos: [],
           error: error.message
         });
       }
     }
 
-    // 5. Calculate summary stats
+    // 5. Summary stats
     const totalVideos = results.reduce((sum, ch) => sum + ch.videos.length, 0);
     const totalChannels = results.filter(ch => ch.videos.length > 0).length;
     const summary = `Found ${totalVideos} video${totalVideos !== 1 ? 's' : ''} from ${totalChannels} channel${totalChannels !== 1 ? 's' : ''}`;
 
-    logger.info({
-      totalVideos,
-      totalChannels,
-      channelsWithErrors: results.filter(ch => ch.error).length
-    }, 'Completed YouTube latest videos fetch');
+    logger.info({ totalVideos, totalChannels }, 'Completed YouTube latest videos fetch');
 
-    // 6. Send email if configured
+    // 6. Send email if requested
     let emailSent = false;
-    if (config.gmail.recipientEmail && results.length > 0) {
+    if (input.sendEmail && config.gmail.recipientEmail && results.length > 0) {
       try {
         const { formatVideoDigestEmail } = await import('../../utils/email-formatter.js');
-        const { sendEmail } = await import('../gmail/sendEmail.js');
+        const { sendGmail } = await import('../../utils/gmail-sender.js');
 
         const { subject, htmlBody } = formatVideoDigestEmail(results);
-
-        await sendEmail.execute({
-          recipientEmail: config.gmail.recipientEmail,
-          subject,
-          body: htmlBody,
-          isHtml: true
-        });
+        await sendGmail(config.gmail.recipientEmail, subject, htmlBody);
 
         emailSent = true;
         logger.info('Email digest sent successfully');
       } catch (error: any) {
         logger.warn({ error: error.message }, 'Failed to send email digest (non-fatal)');
-        // Don't throw - email is optional
       }
     }
 

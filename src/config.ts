@@ -36,7 +36,8 @@ export const config = {
   server: {
     port: env('MCP_PORT', 3000),
     host: env('MCP_HOST', '0.0.0.0'),
-    logLevel: env('LOG_LEVEL', 'info')
+    logLevel: env('LOG_LEVEL', 'info'),
+    apiKey: env('MCP_API_KEY', '')
   },
   rateLimit: {
     maxConcurrent: env('RATE_LIMIT_CONCURRENT', 5),
@@ -46,10 +47,22 @@ export const config = {
     default: env('TIMEOUT_DEFAULT', 30000),
     long: env('TIMEOUT_LONG', 120000)
   },
-  composio: {
-    apiKey: env('COMPOSIO_API_KEY', ''),
-    mcpEndpoint: env('COMPOSIO_MCP_ENDPOINT', ''),
-    userId: env('COMPOSIO_USER_ID', '')
+  google: {
+    clientId: env('GOOGLE_CLIENT_ID', ''),
+    clientSecret: env('GOOGLE_CLIENT_SECRET', ''),
+    refreshToken: env('GOOGLE_REFRESH_TOKEN', '')
+  },
+  ai: {
+    provider: env('AI_PROVIDER', 'openai'),
+    apiKey: env('AI_API_KEY', ''),
+    model: env('AI_MODEL', 'gpt-4o-mini')
+  },
+  qdrant: {
+    url: env('QDRANT_URL', 'http://localhost:6333'),
+    apiKey: env('QDRANT_API_KEY', ''),
+    collection: env('QDRANT_COLLECTION', 'default'),
+    embeddingModel: env('EMBEDDING_MODEL', 'text-embedding-3-small'),
+    embeddingEndpoint: env('EMBEDDING_ENDPOINT', 'https://api.openai.com/v1/embeddings')
   },
   youtube: {
     defaultVideosPerChannel: env('YOUTUBE_DEFAULT_VIDEOS_PER_CHANNEL', 5),

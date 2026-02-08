@@ -18,6 +18,8 @@ export interface Video {
   channelTitle: string;
   thumbnail: string;
   url: string;
+  summary?: string;
+  summarySource?: 'transcript' | 'description' | 'fallback';
 }
 
 /**
@@ -47,12 +49,7 @@ export interface ChannelVideos {
  * const channels = await getLatestVideos.execute({ maxChannels: 10 });
  * const { subject, htmlBody } = formatVideoDigestEmail(channels.channels);
  *
- * await sendEmail.execute({
- *   recipientEmail: 'user@example.com',
- *   subject,
- *   body: htmlBody,
- *   isHtml: true
- * });
+ * await sendGmail('user@example.com', subject, htmlBody);
  * ```
  */
 export function formatVideoDigestEmail(
@@ -119,9 +116,13 @@ function generateChannelsHtml(channels: ChannelVideos[]): string {
           minute: '2-digit'
         });
 
+        const summaryHtml = video.summary
+          ? `<br><span style="color: #555; font-size: 0.9em;">${escapeHtml(video.summary)}</span>`
+          : '';
+
         html += `            <div class="video">
                 <a href="${escapeHtml(video.url)}" class="video-title">${escapeHtml(video.title)}</a><br>
-                <span class="video-date">📅 ${dateStr}</span>
+                <span class="video-date">📅 ${dateStr}</span>${summaryHtml}
             </div>
 `;
       }

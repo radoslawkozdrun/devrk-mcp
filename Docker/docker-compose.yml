@@ -1,0 +1,283 @@
+version: "3.7"
+
+services:
+  traefik:
+    image: "traefik"
+    restart: always
+    command:
+      - "--api=true"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.mytlschallenge.acme.tlschallenge=true"
+      - "--certificatesresolvers.mytlschallenge.acme.email=${SSL_EMAIL}"
+      - "--certificatesresolvers.mytlschallenge.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - traefik_data:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    restart: always
+    ports:
+      - "127.0.0.1:5678:5678"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.n8n.rule=Host(`${SUBDOMAIN}.${DOMAIN_NAME}`) || Host(`n8n.devradoslawkozdrun.cloud`)
+      - traefik.http.routers.n8n.tls=true
+      - traefik.http.routers.n8n.entrypoints=web,websecure
+      - traefik.http.routers.n8n.tls.certresolver=mytlschallenge
+      - traefik.http.middlewares.n8n.headers.SSLRedirect=true
+      - traefik.http.middlewares.n8n.headers.STSSeconds=315360000
+      - traefik.http.middlewares.n8n.headers.browserXSSFilter=true
+      - traefik.http.middlewares.n8n.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.n8n.headers.forceSTSHeader=true
+      - traefik.http.middlewares.n8n.headers.SSLHost=${DOMAIN_NAME}
+      - traefik.http.middlewares.n8n.headers.STSIncludeSubdomains=true
+      - traefik.http.middlewares.n8n.headers.STSPreload=true
+      - traefik.http.routers.n8n.middlewares=n8n@docker
+    environment:
+      - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - N8N_TRUST_PROXY=true
+      - NODE_ENV=production
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - /local-files:/files
+    depends_on:
+      - qdrant
+
+  postgres:
+    image: postgres:14.5
+    container_name: my-postgres
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+      - "8967:5432"
+    volumes:
+      - "postgres-volume:/var/lib/postgresql/data"
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: always
+    ports:
+      # REST API - dostęp lokalny
+      - "127.0.0.1:6333:6333"
+      # gRPC API - dostęp lokalny
+      - "127.0.0.1:6334:6334"
+    labels:
+      # Wyłącz automatyczne aktualizacje watchtower dla stabilności
+      - com.centurylinklabs.watchtower.enable=false
+      # Traefik - opcjonalnie wystawia dashboard Qdrant na zewnątrz
+      - traefik.enable=true
+      - traefik.http.routers.qdrant.rule=Host(`qdrant.${DOMAIN_NAME}`) || Host(`qdrant.devradoslawkozdrun.cloud`)
+      - traefik.http.routers.qdrant.tls=true
+      - traefik.http.routers.qdrant.entrypoints=web,websecure
+      - traefik.http.routers.qdrant.tls.certresolver=mytlschallenge
+      - traefik.http.services.qdrant.loadbalancer.server.port=6333
+      # Basic Auth dla zabezpieczenia dashboardu (opcjonalne)
+      #- traefik.http.routers.qdrant.middlewares=qdrant-auth@docker
+      #- traefik.http.middlewares.qdrant-auth.basicauth.users=${QDRANT_BASIC_AUTH}
+    environment:
+      # Konfiguracja Qdrant
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      # Opcjonalnie: włącz API key dla bezpieczeństwa
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+      # Telemetria (wyłączona dla prywatności)
+      - QDRANT__TELEMETRY_DISABLED=true
+      # Limity pamięci dla optymalizacji
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - qdrant_snapshots:/qdrant/snapshots
+        #healthcheck:
+        #test: ["CMD", "wget", "--spider", "-q", "http://localhost:6333/readyz"]
+        # interval: 30s
+        # timeout: 10s
+        # retries: 3
+        # start_period: 10s
+
+  mcp-server:
+    build:
+      context: ./repo/mcp-server
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    restart: always
+    ports:
+      - "127.0.0.1:3000:3000"
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+      - traefik.enable=true
+      - traefik.http.routers.mcp.rule=Host(`mcp.${DOMAIN_NAME}`) || Host(`mcp.devradoslawkozdrun.cloud`)
+      - traefik.http.routers.mcp.tls=true
+      - traefik.http.routers.mcp.entrypoints=web,websecure
+      - traefik.http.routers.mcp.tls.certresolver=mytlschallenge
+      - traefik.http.services.mcp.loadbalancer.server.port=3000
+    environment:
+      - NODE_ENV=production
+      - MCP_API_KEY=${MCP_API_KEY}
+      - PORT=3000
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REFRESH_TOKEN=${GOOGLE_REFRESH_TOKEN}
+      - AI_PROVIDER=${AI_PROVIDER}
+      - AI_API_KEY=${AI_API_KEY}
+      - AI_MODEL=${AI_MODEL}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_ENDPOINT=${EMBEDDING_ENDPOINT}
+      - RECIPIENT_EMAIL=${RECIPIENT_EMAIL}
+
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: dozzle
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dozzle.rule=Host(`dozzle.${DOMAIN_NAME}`) || Host(`dozzle.devradoslawkozdrun.cloud`)
+      - traefik.http.routers.dozzle.tls=true
+      - traefik.http.routers.dozzle.entrypoints=web,websecure
+      - traefik.http.routers.dozzle.tls.certresolver=mytlschallenge
+      - traefik.http.services.dozzle.loadbalancer.server.port=8080
+    environment:
+      - DOZZLE_LEVEL=info
+      # - DOZZLE_ENABLE_ACTIONS=true    # odkomentuj aby włączyć stop/start/restart kontenerów
+      # - DOZZLE_ENABLE_SHELL=true      # odkomentuj aby włączyć dostęp do shella kontenerów
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Sprawdzaj co 24 godziny (86400 sekund)
+      - WATCHTOWER_POLL_INTERVAL=86400
+      # Usuń stare obrazy po aktualizacji
+      - WATCHTOWER_CLEANUP=true
+      # Powiadomienia email
+      - WATCHTOWER_NOTIFICATIONS=email
+      - WATCHTOWER_NOTIFICATION_EMAIL_FROM=${WATCHTOWER_EMAIL_FROM}
+      - WATCHTOWER_NOTIFICATION_EMAIL_TO=${WATCHTOWER_EMAIL_TO}
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER=${WATCHTOWER_EMAIL_SERVER}
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PORT=${WATCHTOWER_EMAIL_SERVER_PORT}
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_USER=${WATCHTOWER_EMAIL_SERVER_USER}
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PASSWORD=${WATCHTOWER_EMAIL_SERVER_PASSWORD}
+      # Opcjonalnie: wymagaj TLS dla SMTP
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_TLS_SKIP_VERIFY=${WATCHTOWER_EMAIL_TLS_SKIP_VERIFY:-false}
+      # Timezone dla logów
+      - TZ=${GENERIC_TIMEZONE}
+      - DOCKER_API_VERSION=1.52
+
+  devrk-toolbox:
+    build:
+      context: ./repo/devrk-toolbox-app
+      dockerfile: docker/Dockerfile
+    container_name: devrk-toolbox
+    restart: always
+    ports:
+      - "127.0.0.1:8081:8000"
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+      - traefik.enable=true
+      - traefik.http.routers.toolbox.rule=Host(`toolbox.${DOMAIN_NAME}`) || Host(`toolbox.devradoslawkozdrun.cloud`)
+      - traefik.http.routers.toolbox.tls=true
+      - traefik.http.routers.toolbox.entrypoints=web,websecure
+      - traefik.http.routers.toolbox.tls.certresolver=mytlschallenge
+      - traefik.http.services.toolbox.loadbalancer.server.port=8000
+      - traefik.http.middlewares.toolbox-headers.headers.SSLRedirect=true
+      - traefik.http.middlewares.toolbox-headers.headers.STSSeconds=315360000
+      - traefik.http.middlewares.toolbox-headers.headers.browserXSSFilter=true
+      - traefik.http.middlewares.toolbox-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.toolbox-headers.headers.forceSTSHeader=true
+      - traefik.http.middlewares.toolbox-headers.headers.STSIncludeSubdomains=true
+      - traefik.http.middlewares.toolbox-headers.headers.STSPreload=true
+      - traefik.http.routers.toolbox.middlewares=toolbox-headers@docker
+    environment:
+      - APP_MODE=vps
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - POSTGRES_HOST=my-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - AUTH_USERNAME=${TOOLBOX_AUTH_USERNAME}
+      - AUTH_PASSWORD_HASH=${TOOLBOX_AUTH_PASSWORD_HASH}
+      - JWT_SECRET_KEY=${TOOLBOX_JWT_SECRET_KEY}
+    depends_on:
+      - qdrant
+      - postgres
+
+  devrk-landing:
+    build:
+      context: ./repo/devrk-landingpage
+      dockerfile: Dockerfile
+    container_name: devrk-landing
+    restart: always
+    labels:
+      - traefik.enable=true
+      # ============================================
+      # ROUTER GŁÓWNY - tylko dla domeny .pl
+      # ============================================
+      - traefik.http.routers.devrk-landing.rule=Host(`devradoslawkozdrun.pl`) || Host(`www.devradoslawkozdrun.pl`)
+      - traefik.http.routers.devrk-landing.tls=true
+      - traefik.http.routers.devrk-landing.entrypoints=web,websecure
+      - traefik.http.routers.devrk-landing.tls.certresolver=mytlschallenge
+      - traefik.http.services.devrk-landing.loadbalancer.server.port=80
+      # Security headers dla .pl
+      - traefik.http.middlewares.devrk-headers.headers.SSLRedirect=true
+      - traefik.http.middlewares.devrk-headers.headers.STSSeconds=315360000
+      - traefik.http.middlewares.devrk-headers.headers.browserXSSFilter=true
+      - traefik.http.middlewares.devrk-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.devrk-headers.headers.forceSTSHeader=true
+      - traefik.http.middlewares.devrk-headers.headers.STSIncludeSubdomains=true
+      - traefik.http.middlewares.devrk-headers.headers.STSPreload=true
+      - traefik.http.routers.devrk-landing.middlewares=devrk-headers@docker
+      # ============================================
+      # ROUTER PRZEKIEROWANIA - .cloud -> .pl (301)
+      # ============================================
+      - traefik.http.routers.devrk-cloud-redirect.rule=Host(`devradoslawkozdrun.cloud`) || Host(`www.devradoslawkozdrun.cloud`)
+      - traefik.http.routers.devrk-cloud-redirect.entrypoints=web,websecure
+      - traefik.http.routers.devrk-cloud-redirect.tls=true
+      - traefik.http.routers.devrk-cloud-redirect.tls.certresolver=mytlschallenge
+      # Middleware przekierowania 301 z zachowaniem ścieżki
+      - traefik.http.middlewares.redirect-cloud-to-pl.redirectregex.regex=^https?://(?:www\.)?devradoslawkozdrun\.cloud(.*)
+      - traefik.http.middlewares.redirect-cloud-to-pl.redirectregex.replacement=https://devradoslawkozdrun.pl$${1}
+      - traefik.http.middlewares.redirect-cloud-to-pl.redirectregex.permanent=true
+      - traefik.http.routers.devrk-cloud-redirect.middlewares=redirect-cloud-to-pl@docker
+      - traefik.http.routers.devrk-cloud-redirect.service=devrk-landing@docker
+      - com.centurylinklabs.watchtower.enable=false
+
+volumes:
+  traefik_data:
+    external: true
+  n8n_data:
+    external: true
+  postgres-volume:
+    external: true
+  # Nowe volumes dla Qdrant
+  qdrant_data:
+    driver: local
+  qdrant_snapshots:
+    driver: local
