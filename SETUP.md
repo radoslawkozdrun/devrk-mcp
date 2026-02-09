@@ -133,8 +133,8 @@ curl -X POST http://localhost:3000/mcp \
 
 ```bash
 cd Docker
-docker-compose build mcp-server
-docker-compose up mcp-server
+docker-compose build devrk-mcp
+docker-compose up devrk-mcp
 
 # W drugim terminalu:
 curl http://localhost:3000/health
@@ -201,12 +201,13 @@ Jeśli serwer jest poprawnie podłączony, Claude wywoła narzędzie `youtube__g
 ## 5. Klucze Google OAuth2
 
 Projekt używa Google OAuth2 do:
+
 - **YouTube Data API v3** - pobieranie subskrypcji i najnowszych filmów
 - **Gmail API** - wysyłanie email digestów
 
 ### Krok 1: Utwórz projekt w Google Cloud Console
 
-1. Wejdź na https://console.cloud.google.com/
+1. Wejdź na <https://console.cloud.google.com/>
 2. Utwórz nowy projekt (np. `devrk-mcp`)
 3. W menu bocznym przejdź do **APIs & Services > Library**
 4. Włącz dwa API:
@@ -239,7 +240,7 @@ Projekt używa Google OAuth2 do:
 
 ### Krok 4: Wygeneruj Refresh Token
 
-1. Wejdź na https://developers.google.com/oauthplayground
+1. Wejdź na <https://developers.google.com/oauthplayground>
 2. Kliknij ikonę **ustawień** (koło zębate, prawy górny róg)
 3. Zaznacz **Use your own OAuth credentials**
 4. Wpisz swój Client ID i Client Secret
@@ -257,6 +258,7 @@ Projekt używa Google OAuth2 do:
 ## 6. Konfiguracja AI Providera
 
 AI provider służy do dwóch celów:
+
 1. **Podsumowania filmów YouTube** (2-zdaniowe streszczenia transkryptów)
 2. **Generowanie embeddingów** dla Qdrant semantic search
 
@@ -270,7 +272,7 @@ AI provider służy do dwóch celów:
 
 ### OpenAI (domyślny)
 
-1. Wejdź na https://platform.openai.com/api-keys
+1. Wejdź na <https://platform.openai.com/api-keys>
 2. Utwórz nowy klucz API
 3. Ustaw w `.env`:
 
@@ -284,7 +286,7 @@ AI_MODEL=gpt-4o-mini
 
 ### Anthropic
 
-1. Wejdź na https://console.anthropic.com/settings/keys
+1. Wejdź na <https://console.anthropic.com/settings/keys>
 2. Utwórz nowy klucz API
 3. Ustaw w `.env`:
 
@@ -296,7 +298,7 @@ AI_MODEL=claude-haiku-4-5-20251001
 
 ### DeepSeek
 
-1. Wejdź na https://platform.deepseek.com/api_keys
+1. Wejdź na <https://platform.deepseek.com/api_keys>
 2. Utwórz nowy klucz API
 3. Ustaw w `.env`:
 
@@ -316,6 +318,7 @@ EMBEDDING_ENDPOINT=https://api.openai.com/v1/embeddings
 ```
 
 Jeśli używasz Anthropic/DeepSeek jako AI providera, ale chcesz embeddingi z OpenAI - potrzebujesz osobnego klucza OpenAI. W obecnej konfiguracji `AI_API_KEY` jest współdzielony, więc najprościej jest:
+
 - Użyć OpenAI jako AI provider (wtedy zarówno podsumowania jak i embeddingi korzystają z tego samego klucza)
 - LUB zmienić `EMBEDDING_ENDPOINT` na provider kompatybilny z Twoim kluczem
 

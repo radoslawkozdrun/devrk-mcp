@@ -105,22 +105,22 @@ services:
         # retries: 3
         # start_period: 10s
 
-  mcp-server:
+  devrk-mcp:
     build:
       context: ./repo/devrk-mcp
       dockerfile: Dockerfile
-    container_name: mcp-server
+    container_name: devrk-mcp
     restart: always
     ports:
       - "127.0.0.1:3000:3000"
     labels:
       - com.centurylinklabs.watchtower.enable=false
       - traefik.enable=true
-      - traefik.http.routers.mcp.rule=Host(`mcp.${DOMAIN_NAME}`) || Host(`mcp.devradoslawkozdrun.cloud`)
-      - traefik.http.routers.mcp.tls=true
-      - traefik.http.routers.mcp.entrypoints=web,websecure
-      - traefik.http.routers.mcp.tls.certresolver=mytlschallenge
-      - traefik.http.services.mcp.loadbalancer.server.port=3000
+      - traefik.http.routers.devrk-mcp.rule=Host(`mcp.${DOMAIN_NAME}`) || Host(`mcp.devradoslawkozdrun.cloud`)
+      - traefik.http.routers.devrk-mcp.tls=true
+      - traefik.http.routers.devrk-mcp.entrypoints=web,websecure
+      - traefik.http.routers.devrk-mcp.tls.certresolver=mytlschallenge
+      - traefik.http.services.devrk-mcp.loadbalancer.server.port=3000
     environment:
       - NODE_ENV=production
       - MCP_API_KEY=${MCP_API_KEY}

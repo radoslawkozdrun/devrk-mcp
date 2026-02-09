@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}=== Aktualizacja MCP Server ===${NC}"
 
-# 1. Zaktualizuj repozytorium mcp-server
+# 1. Zaktualizuj repozytorium devrk-mcp
 echo -e "${YELLOW}[1/5] Aktualizacja repozytorium...${NC}"
 cd /root/repo/devrk-mcp
 
@@ -41,15 +41,19 @@ echo -e "${GREEN}Aktualny commit: ${COMMIT_HASH}${NC}"
 echo -e "${YELLOW}[4/5] Pelne czyszczenie Docker...${NC}"
 cd /root
 
+CONTAINER_NAME="devrk-mcp"
+
 # Zatrzymaj i usun kontener
 echo -e "${YELLOW}Zatrzymywanie i usuwanie starego kontenera...${NC}"
-docker-compose stop mcp-server 2>/dev/null || true
-docker-compose rm -f mcp-server 2>/dev/null || true
+docker-compose stop $CONTAINER_NAME 2>/dev/null || true
+docker-compose rm -f $CONTAINER_NAME 2>/dev/null || true
 
-# Usun stary obraz mcp-server
+# Usun stary obraz
 echo -e "${YELLOW}Usuwanie starych obrazow...${NC}"
-docker images | grep mcp-server | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
-docker images | grep root_mcp-server | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
+docker images | grep $CONTAINER_NAME | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
+docker images | grep "root_$CONTAINER_NAME" | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
+# Usun tez stare obrazy o nazwie mcp-server (po migracji)
+docker images | grep "mcp-server" | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
 
 # Wyczysc nieużywane obrazy i kontenery
 echo -e "${YELLOW}Czyszczenie nieuzywanych zasobow Docker...${NC}"
@@ -58,19 +62,19 @@ docker container prune -f
 
 # 4. Budowanie i uruchomienie
 echo -e "${YELLOW}[5/5] Budowanie nowego obrazu...${NC}"
-docker compose build --no-cache mcp-server
+docker compose build --no-cache $CONTAINER_NAME
 
 # Uruchom kontener
 echo -e "${YELLOW}Uruchamianie kontenera...${NC}"
-docker compose up -d mcp-server
+docker compose up -d $CONTAINER_NAME
 
 # Sprawdz status
 echo -e "${GREEN}=== Status kontenera ===${NC}"
-docker compose ps mcp-server
+docker compose ps $CONTAINER_NAME
 
 # Pokaz ostatnie logi
 echo -e "${GREEN}=== Ostatnie logi (10 linii) ===${NC}"
-docker compose logs --tail=10 mcp-server
+docker compose logs --tail=10 $CONTAINER_NAME
 
 echo -e "${GREEN}=== Aktualizacja zakonczona! ===${NC}"
 echo -e "${GREEN}Commit: ${COMMIT_HASH}${NC}"
