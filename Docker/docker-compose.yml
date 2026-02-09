@@ -75,14 +75,14 @@ services:
     container_name: qdrant
     restart: always
     ports:
-      # REST API - dostęp lokalny
+      # REST API - dostÄ™p lokalny
       - "127.0.0.1:6333:6333"
-      # gRPC API - dostęp lokalny
+      # gRPC API - dostÄ™p lokalny
       - "127.0.0.1:6334:6334"
     labels:
-      # Wyłącz automatyczne aktualizacje watchtower dla stabilności
+      # WyĹ‚Ä…cz automatyczne aktualizacje watchtower dla stabilnoĹ›ci
       - com.centurylinklabs.watchtower.enable=false
-      # Traefik - opcjonalnie wystawia dashboard Qdrant na zewnątrz
+      # Traefik - opcjonalnie wystawia dashboard Qdrant na zewnÄ…trz
       - traefik.enable=true
       - traefik.http.routers.qdrant.rule=Host(`qdrant.${DOMAIN_NAME}`) || Host(`qdrant.devradoslawkozdrun.cloud`)
       - traefik.http.routers.qdrant.tls=true
@@ -96,11 +96,11 @@ services:
       # Konfiguracja Qdrant
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__SERVICE__HTTP_PORT=6333
-      # Opcjonalnie: włącz API key dla bezpieczeństwa
+      # Opcjonalnie: wĹ‚Ä…cz API key dla bezpieczeĹ„stwa
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
-      # Telemetria (wyłączona dla prywatności)
+      # Telemetria (wyĹ‚Ä…czona dla prywatnoĹ›ci)
       - QDRANT__TELEMETRY_DISABLED=true
-      # Limity pamięci dla optymalizacji
+      # Limity pamiÄ™ci dla optymalizacji
       - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
     volumes:
       - qdrant_data:/qdrant/storage
@@ -114,7 +114,7 @@ services:
 
   mcp-server:
     build:
-      context: ./repo/mcp-server
+      context: ./repo/devrk-mcp
       dockerfile: Dockerfile
     container_name: mcp-server
     restart: always
@@ -160,8 +160,8 @@ services:
       - traefik.http.services.dozzle.loadbalancer.server.port=8080
     environment:
       - DOZZLE_LEVEL=info
-      # - DOZZLE_ENABLE_ACTIONS=true    # odkomentuj aby włączyć stop/start/restart kontenerów
-      # - DOZZLE_ENABLE_SHELL=true      # odkomentuj aby włączyć dostęp do shella kontenerów
+      # - DOZZLE_ENABLE_ACTIONS=true    # odkomentuj aby wĹ‚Ä…czyÄ‡ stop/start/restart kontenerĂłw
+      # - DOZZLE_ENABLE_SHELL=true      # odkomentuj aby wĹ‚Ä…czyÄ‡ dostÄ™p do shella kontenerĂłw
 
   watchtower:
     image: containrrr/watchtower
@@ -172,7 +172,7 @@ services:
     environment:
       # Sprawdzaj co 24 godziny (86400 sekund)
       - WATCHTOWER_POLL_INTERVAL=86400
-      # Usuń stare obrazy po aktualizacji
+      # UsuĹ„ stare obrazy po aktualizacji
       - WATCHTOWER_CLEANUP=true
       # Powiadomienia email
       - WATCHTOWER_NOTIFICATIONS=email
@@ -184,7 +184,7 @@ services:
       - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PASSWORD=${WATCHTOWER_EMAIL_SERVER_PASSWORD}
       # Opcjonalnie: wymagaj TLS dla SMTP
       - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_TLS_SKIP_VERIFY=${WATCHTOWER_EMAIL_TLS_SKIP_VERIFY:-false}
-      # Timezone dla logów
+      # Timezone dla logĂłw
       - TZ=${GENERIC_TIMEZONE}
       - DOCKER_API_VERSION=1.52
 
@@ -238,7 +238,7 @@ services:
     labels:
       - traefik.enable=true
       # ============================================
-      # ROUTER GŁÓWNY - tylko dla domeny .pl
+      # ROUTER GĹĂ“WNY - tylko dla domeny .pl
       # ============================================
       - traefik.http.routers.devrk-landing.rule=Host(`devradoslawkozdrun.pl`) || Host(`www.devradoslawkozdrun.pl`)
       - traefik.http.routers.devrk-landing.tls=true
@@ -261,7 +261,7 @@ services:
       - traefik.http.routers.devrk-cloud-redirect.entrypoints=web,websecure
       - traefik.http.routers.devrk-cloud-redirect.tls=true
       - traefik.http.routers.devrk-cloud-redirect.tls.certresolver=mytlschallenge
-      # Middleware przekierowania 301 z zachowaniem ścieżki
+      # Middleware przekierowania 301 z zachowaniem Ĺ›cieĹĽki
       - traefik.http.middlewares.redirect-cloud-to-pl.redirectregex.regex=^https?://(?:www\.)?devradoslawkozdrun\.cloud(.*)
       - traefik.http.middlewares.redirect-cloud-to-pl.redirectregex.replacement=https://devradoslawkozdrun.pl$${1}
       - traefik.http.middlewares.redirect-cloud-to-pl.redirectregex.permanent=true

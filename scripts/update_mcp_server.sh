@@ -3,7 +3,7 @@
 # Skrypt do aktualizacji MCP Server na VPS
 # Lokalizacja: /root/update_mcp_server
 
-set -e  # Zatrzymaj skrypt przy bĹ‚Ä™dzie
+set -e  # Zatrzymaj skrypt przy bÄąâ€šĂ„â„˘dzie
 
 # Kolory dla outputu
 RED='\033[0;31m'
@@ -15,13 +15,13 @@ echo -e "${GREEN}=== Aktualizacja MCP Server ===${NC}"
 
 # 1. Zaktualizuj repozytorium mcp-server
 echo -e "${YELLOW}[1/5] Aktualizacja repozytorium...${NC}"
-cd /root/repo/mcp-server
+cd /root/repo/devrk-mcp
 
-# SprawdĹş czy sÄ… niezapisane zmiany
+# SprawdÄąĹź czy sĂ„â€¦ niezapisane zmiany
 if [[ -n $(git status -s) ]]; then
-    echo -e "${RED}UWAGA: SÄ… niezapisane zmiany w repozytorium!${NC}"
+    echo -e "${RED}UWAGA: SĂ„â€¦ niezapisane zmiany w repozytorium!${NC}"
     git status -s
-    read -p "Czy chcesz kontynuowaÄ‡? (y/n) " -n 1 -r
+    read -p "Czy chcesz kontynuowaĂ„â€ˇ? (y/n) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo -e "${RED}Aktualizacja anulowana.${NC}"
@@ -33,26 +33,26 @@ fi
 git fetch origin
 git pull origin main || git pull origin master
 
-# Pobierz numer ostatniego commita (krĂłtki hash)
+# Pobierz numer ostatniego commita (krÄ‚Ĺ‚tki hash)
 COMMIT_HASH=$(git rev-parse --short HEAD)
 echo -e "${GREEN}Aktualny commit: ${COMMIT_HASH}${NC}"
 
 # 3. Przebuduj obraz dockerowy
-echo -e "${YELLOW}[4/5] PeĹ‚ne czyszczenie Docker...${NC}"
+echo -e "${YELLOW}[4/5] PeÄąâ€šne czyszczenie Docker...${NC}"
 cd /root
 
-# Zatrzymaj i usuĹ„ kontener
+# Zatrzymaj i usuÄąâ€ž kontener
 echo -e "${YELLOW}Zatrzymywanie i usuwanie starego kontenera...${NC}"
 docker-compose stop mcp-server 2>/dev/null || true
 docker-compose rm -f mcp-server 2>/dev/null || true
 
-# UsuĹ„ stary obraz mcp-server
-echo -e "${YELLOW}Usuwanie starych obrazĂłw...${NC}"
+# UsuÄąâ€ž stary obraz mcp-server
+echo -e "${YELLOW}Usuwanie starych obrazÄ‚Ĺ‚w...${NC}"
 docker images | grep mcp-server | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
 docker images | grep root_mcp-server | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
 
-# WyczyĹ›Ä‡ nieuĹĽywane obrazy i kontenery
-echo -e "${YELLOW}Czyszczenie nieuĹĽywanych zasobĂłw Docker...${NC}"
+# WyczyÄąâ€şĂ„â€ˇ nieuÄąÄ˝ywane obrazy i kontenery
+echo -e "${YELLOW}Czyszczenie nieuÄąÄ˝ywanych zasobÄ‚Ĺ‚w Docker...${NC}"
 docker image prune -f
 docker container prune -f
 
@@ -64,13 +64,13 @@ docker compose build --no-cache mcp-server
 echo -e "${YELLOW}Uruchamianie kontenera...${NC}"
 docker compose up -d mcp-server
 
-# SprawdĹş status
+# SprawdÄąĹź status
 echo -e "${GREEN}=== Status kontenera ===${NC}"
 docker compose ps mcp-server
 
-# PokaĹĽ ostatnie logi
+# PokaÄąÄ˝ ostatnie logi
 echo -e "${GREEN}=== Ostatnie logi (10 linii) ===${NC}"
 docker compose logs --tail=10 mcp-server
 
-echo -e "${GREEN}=== Aktualizacja zakoĹ„czona! ===${NC}"
+echo -e "${GREEN}=== Aktualizacja zakoÄąâ€žczona! ===${NC}"
 echo -e "${GREEN}Commit: ${COMMIT_HASH}${NC}"
