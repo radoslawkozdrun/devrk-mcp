@@ -37,7 +37,9 @@ const SearchInputSchema = z.object({
   limit: z.number().min(1).max(50).optional().default(5)
     .describe('Maximum number of results'),
   scoreThreshold: z.number().min(0).max(1).optional().default(0.7)
-    .describe('Minimum similarity score (0-1)')
+    .describe('Minimum similarity score (0-1)'),
+  vectorName: z.string().optional()
+    .describe('Named vector to search on (auto-detected if not provided)')
 });
 
 const SearchResultSchema = z.object({
@@ -96,12 +98,50 @@ export const search = createTool({
       timeout: config.timeout.default
     });
 
-    const searchResult = await client.query(input.collection, {
+    // Auto-detect named vector if not provided
+    let vectorName = input.vectorName;
+    if (!vectorName) {
+      try {
+        const collectionInfo = await client.getCollection(input.collection);
+        const vectorsConfig = collectionInfo.config?.params?.vectors;
+
+        // If vectors config is an object with named keys (not a direct size/distance config),
+        // it means the collection uses named vectors
+        if (vectorsConfig && typeof vectorsConfig === 'object' && !('size' in vectorsConfig)) {
+          const vectorNames = Object.keys(vectorsConfig);
+          if (vectorNames.length > 0) {
+            vectorName = vectorNames[0];
+            logger.info({ vectorName, allVectors: vectorNames }, 'Auto-detected named vector');
+          }
+        }
+      } catch (err: any) {
+        logger.warn({ error: err.message, collection: input.collection }, 'Failed to detect vector config, proceeding without named vector');
+      }
+    }
+
+    // Build query parameters
+    const queryParams: any = {
       query: queryVector,
       limit: input.limit,
       score_threshold: input.scoreThreshold,
       with_payload: true
-    });
+    };
+
+    if (vectorName) {
+      queryParams.using = vectorName;
+    }
+
+    logger.debug({ vectorName: vectorName || '(default)', queryDim: queryVector.length }, 'Executing Qdrant query');
+
+    let searchResult;
+    try {
+      searchResult = await client.query(input.collection, queryParams);
+    } catch (err: any) {
+      // Try to extract detailed error from Qdrant response
+      const detail = err.data?.status?.error || err.message;
+      logger.error({ detail, collection: input.collection, vectorName }, 'Qdrant query failed');
+      throw new Error(`Qdrant query failed: ${detail}`);
+    }
 
     const results = searchResult.points.map(point => {
       const payload = point.payload || {};
@@ -122,7 +162,8 @@ export const search = createTool({
 
     logger.info({
       totalFound: results.length,
-      collection: input.collection
+      collection: input.collection,
+      vectorName: vectorName || '(default)'
     }, 'Qdrant search completed');
 
     return {

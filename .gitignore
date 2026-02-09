@@ -47,6 +47,7 @@ temp/
 
 # MCP specific
 claude_desktop_config.json
+.mcp.json
 *.backup
 
 # Sensitive data - NEVER COMMIT!
