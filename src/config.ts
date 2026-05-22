@@ -71,5 +71,9 @@ export const config = {
   gmail: {
     enabled: env('GMAIL_ENABLED', true),
     recipientEmail: env('RECIPIENT_EMAIL', '')
+  },
+  facebook: {
+    accessToken: env('FACEBOOK_ACCESS_TOKEN', ''),
+    apiVersion: env('FACEBOOK_API_VERSION', 'v22.0')
   }
 };

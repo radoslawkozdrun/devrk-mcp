@@ -32,6 +32,10 @@ async function main() {
     logger.warn('AI_API_KEY not set - video summaries will use fallback (truncation)');
   }
 
+  if (!config.facebook.accessToken) {
+    logger.warn('FACEBOOK_ACCESS_TOKEN not set - Facebook tools will not work');
+  }
+
   try {
     await startMcpServer();
 

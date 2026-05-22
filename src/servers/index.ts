@@ -22,6 +22,12 @@ export const serverRegistry: ServerMetadata[] = [
     description: 'Qdrant RAG - semantic search and knowledge base operations',
     version: '1.0.0',
     tools: ['search', 'listCollections']
+  },
+  {
+    name: 'facebook',
+    description: 'Facebook Graph API - fetch user posts and comments',
+    version: '1.0.0',
+    tools: ['fetchPostsWithComments']
   }
 ];
 
