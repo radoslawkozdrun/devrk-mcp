@@ -53,7 +53,8 @@ export async function graphGet<T>(
     }
 
     const response = await fetch(url.toString(), {
-      headers: { Accept: 'application/json' }
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(config.timeout.default)
     });
 
     const body = await response.json() as T | GraphApiError;
